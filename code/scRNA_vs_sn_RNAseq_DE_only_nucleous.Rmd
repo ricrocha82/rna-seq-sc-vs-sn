@@ -1,0 +1,380 @@
+---
+title: "scRNA_vs_sn_RNAseq_DE"
+author: "Ricardo Silva"
+date: "5/7/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      eval=FALSE, 
+                      message=FALSE, 
+                      warning=FALSE)
+```
+
+```{r CLEAR EVERYTHING, eval=FALSE, include=FALSE}
+# unload all non-base packages
+lapply(names(sessionInfo()$otherPkgs), function(pkgs)
+  detach(
+    paste0('package:', pkgs),
+    character.only = T,
+    unload = T,
+    force = T
+))
+
+rm(list=ls())
+```
+
+```{r}
+#install.packages('Seurat')
+#devtools::install_github("immunogenomics/harmony")
+```
+
+```{r load libraries, message=FALSE, warning=FALSE, include=FALSE}
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(clustree)
+  library(data.table)
+  library(RColorBrewer)
+  library(sctransform)
+  library(scran)
+  library(org.Mm.eg.db)
+  library(clusterProfiler)
+  library(formattable)
+  library(patchwork)
+  library(tidyseurat) # to be compatible with Seurat and tidyverse APIs
+  library(tidyverse)
+})
+
+```
+
+```{r set wd and theme}
+folder_path <- getwd()
+source(paste0(folder_path,"/Script/theme_publication.R"))
+theme_set(theme_Publication_3())
+
+```
+
+```{r}
+#increasing R memory
+options(future.globals.maxSize = 20000 * 1024^2)
+```
+
+Useful links:
+<https://nbisweden.github.io/workshop-scRNAseq/exercises>
+<https://hbctraining.github.io/scRNA-seq_online/schedule/>
+
+###################################
+Exploring known cell type markers
+####################################
+<https://hbctraining.github.io/scRNA-seq_online/lessons/08_SC_clustering_quality_control.html>
+
+Let’s go through and determine the identities of the clusters. To access the normalized expression levels of all genes, we can use the normalized count data stored in the RNA assay slot.
+
+NOTE: Assay is a slot defined in the Seurat object, it has multiple slots within it. In a given assay, the counts slot stores non-normalized raw counts, and the data slot stores normalized expression data. Therefore, when we run the `NormalizeData()` function in the above code, the normalized data will be stored in the data slot of the RNA assay while the counts slot will remain unaltered. `min.cutoff` of *q9* means 9% of cells with the lowest expression of the gene will not exhibit any purple shading (completely gray).
+
+```{r get the objects}
+#Merged.sc <- read_rds(paste0(folder_path,"/Data/Merged.sc.clean.cc.cyclone.clust.RRPS.rds"))
+Obj.integrated <- read_rds(paste0(folder_path,"/Data/Obj.integrated.cluster.RRPS.rds"))
+
+# bellow the code to get these data 
+#markers <- read_csv(paste0(folder_path,"/Data/markers_obj.integ_cs_vs_nc_res0.7.csv"))
+annotations <- read_csv(paste0(folder_path,"/Data/annotation.csv"))
+
+# Assign identity of clusters (identity as louvain with resolution x.x)
+Idents(object = Obj.integrated) <- "integrated_snn_res.0.7"
+#Idents(object = Obj.integrated) <- "integrated_snn_res.0.8"
+```
+
+```{r split the seurat obj}
+Idents(Obj.integrated) <- "orig.ident"
+single_nucleous <- subset(Obj.integrated, ident = "P0s_nucleous_RNAseq")
+rm(Obj.integrated)
+
+single_nucleous
+```
+
+
+Start with marker genes for kidney cells
+```{r known cell markers}
+# change the default assay to RNA
+DefaultAssay(single_nucleous) <- "RNA"
+
+# Normalize RNA data for visualization purposes
+Obj.integrated <- NormalizeData(single_nucleous, verbose = FALSE)
+
+# to label the clusters
+Idents(Obj.integrated) <- "integrated_snn_res.0.7"
+
+# marker genes for kidney cells
+kid.genes <- read_csv(paste0(folder_path,"/Data/kidney_marker_genes.csv"))
+
+# add new column to be use in the plot titles
+kid.genes <- kid.genes %>% mutate(title = case_when(str_detect(cell_type, "stromal") ~ "Stromal Cells",
+                                       str_detect(cell_type, "imune") ~ "Imune system cells",
+                                       str_detect(cell_type, "PT") ~ "Proximal Tubules",
+                                       str_detect(cell_type, "CD_UB") ~ "UB tips and Collecting duct",
+                                       str_detect(cell_type, "Macrophage") ~ "Macrophage",
+                                       str_detect(cell_type, "CM") ~ "Cap Mesenchyme",
+                                       str_detect(cell_type, "Epithelial_cells") ~ "Epithelial cells",
+                                       str_detect(cell_type, "endothelial_cells") ~ "Endothelial cells",
+                                       str_detect(cell_type, "Renal_Vesicle_IM") ~ "Renal Vesicle",
+                                       str_detect(cell_type, "PD") ~ "Podocytes",
+                                       str_detect(cell_type, "mesangial_cells") ~ "Mesangial cells",
+                                       str_detect(cell_type, "renin-producing_cells") ~ "Renin-producing cells",
+                                       str_detect(cell_type, "Distal_Metanephron") ~ "Distal Metanephron",
+                                       str_detect(cell_type, "LOH") ~ "Loop of Henle",
+                                       str_detect(cell_type, "DT") ~ "Distal Tubule")
+                     )
+
+# cheking
+kid.genes %>% filter(str_detect(cell_type, "UB")) %>% pull(gene)
+
+```
+
+```{r table and resolution}
+# cell types and clusters
+cluster_names <- tibble(Cell_Type = c("CM", "PD", "PT", "LOH", "Stromal cells", "Endothelial cells", "Immune cells", "CD and UB"),
+       Clusters_res.0.7 = c("2, 6", "3", "10, 17, 1", "8", "11, 4, 15", "0, 14", "18", "5, 9, 12"),
+    #   Clusters_res.0.9 = c("1,9", "13, 14", "0, 5, 21", "6", "7, 11, 16, 17", "18, 4", "22", "3, 8, 15, 19")
+       ) %>%
+  separate_rows(., Clusters_res.0.7) %>% 
+  mutate(cluster = as.factor(Clusters_res.0.7))
+
+```
+
+```{r}
+# number of clusters
+Idents(Obj.integrated) %>% n_distinct() # 21 clusters
+
+# Rename all identities
+seurat_integrated <- RenameIdents(object = Obj.integrated, 
+                               "0" = "Endothelial cells",
+                               "1" = "Proximal Tubules",
+                               "2" = "Cap Mesenchyme",
+                               "3" = "Podocytes",
+                               "4" = "Stromal cells",
+                               "5" = "UB and Collecting Ducts",
+                               "6" = "Cap Mesenchyme",
+                               "8" = "Loop of Henle",
+                               "9" = "UB and Collecting Ducts",
+                               "10" = "Proximal Tubules",
+                               "11" = "Stromal cells",
+                               "12" = "UB and Collecting Ducts",
+                               "13" = "Podocytes",
+                               "14" = "Endothelial cells",
+                               "15" = "Stromal cells",
+			            			       "17" = "Proximal Tubules", 
+                    			     "18" = "Immune cells")
+
+
+```
+
+
+######################
+Marker identification
+######################
+<https://hbctraining.github.io/scRNA-seq_online/lessons/09_merged_SC_marker_identification.html>
+<https://nbisweden.github.io/workshop-scRNAseq/labs/compiled/seurat/seurat_05_dge.html>
+
+First get annotations 
+<https://hbctraining.github.io/scRNA-seq_online/lessons/fetching_annotations.html>
+```{r annotation}
+# Connect to AnnotationHub
+library(AnnotationHub)
+ah <- AnnotationHub()
+
+# Access the Ensembl database for organism
+ahDb <- query(ah, 
+              pattern = c("Mus musculus", "EnsDb"), 
+              ignore.case = TRUE)
+
+# Acquire the latest annotation files
+id <- ahDb %>%
+        mcols() %>%
+        rownames() %>%
+        tail(n = 1)
+
+# Download the appropriate Ensembldb database
+edb <- ah[[id]]
+
+# Extract gene-level information from database
+annotations <- genes(edb, 
+                     return.type = "data.frame")
+
+# Select annotations of interest
+annotations <- annotations %>%
+        dplyr::select(gene_id, gene_name, seq_name, gene_biotype, description)
+
+# save
+# write_csv(annotations, paste0(folder_path,"/Data/annotation.csv"))
+
+```
+
+Identification of all markers for each cluster:
+
+Now we wil compare each cluster against all others and outputs the genes that are DE/present
+Good to improve confidence in hypothesized cell types
+NOTE: `FindAllMarkers` function is recommended for when evaluating a single sample group/condition
+
+```{r all markers}
+# Find markers for every cluster compared to all remaining cells, report only the positive ones
+markers_nucleous <- FindAllMarkers(object = Obj.integrated, 
+                          test.use = "wilcox",
+                          min.pct = 0.25,
+                          min.diff.pct = 0.25,
+		                      max.cells.per.ident = 50,
+                          only.pos = TRUE, # keep only the positive changes
+                          logfc.threshold = 0.25,
+		                      assay = "RNA") #minimum log fold change (natural log) for average expression of gene
+
+# join annotations
+markers_nucleous <- markers_nucleous %>% as_tibble() %>%
+    left_join(y = annotations %>% distinct(gene_name, description),
+               by = c("gene" = "gene_name")) %>% left_join(cluster_names)
+
+# number of genes per cluster
+markers_nucleous %>% group_by(cluster) %>% summarise(n_gene = n())
+
+# save
+#write_csv(markers_nucleous, paste0(folder_path,"/Data/markers_nucleous_obj.integ_cs_vs_nc_res0.7.csv"))
+#markers_nucleous <- read_csv(paste0(folder_path,"/Data/markers_nucleous_obj.integ_cs_vs_nc_res0.7.csv"))
+
+
+# top 10 and 5 markers per cluster
+top10_nucleous <- markers_nucleous %>% group_by(cluster) %>% 
+  slice_max(avg_log2FC, n = 10) 
+top5_nucleous <- markers_nucleous %>% group_by(cluster) %>% 
+  slice_max(avg_log2FC, n = 5) 
+
+```
+
+```{r bar plot top_genes}
+# number of cluster
+clusters.top <- top10_nucleous %>% distinct(cluster) %>% pull()
+name.cell <-  top10_nucleous %>% distinct(Cell_Type) %>% pull()
+
+# plot for each cluster the top 10 marker genes based on the avg log2 FC
+plot.list.marker.genes <- clusters.top %>% map2(.,name.cell, ~
+      top10_nucleous %>% filter(cluster == .x) %>%
+          mutate(gene = fct_reorder(gene,avg_log2FC)) %>%
+      ggplot(aes(x = gene, y = avg_log2FC)) +
+          geom_bar(stat = "identity", fill="#f68060", alpha=.6, width=.4) +
+          geom_text(aes(label = description), y=0.1, hjust=0) +
+          coord_flip() +
+          ggtitle(glue::glue("{.y}: Cluster {.x} vs. rest - P0 single nucleous")) +
+          theme(plot.title = element_text(hjust = 0.5)) +
+          labs(x = "Marker genes (annotations)",
+               y = "avg log2 Fold-Change")
+
+)
+
+plot.list.marker.genes[[2]] 
+
+map2(paste0(folder_path,"/Output/Plots/only_nucleous/top_gene_markers/cluster_",clusters.top,"_vs_rest.tiff"), plot.list.marker.genes, ggsave)
+
+```
+
+```{r heatmap and dotplot}
+# Set the identity as louvain with resolution 0.5
+sel.clust = "integrated_snn_res.0.7"
+
+# create a scale.data slot for the selected genes
+Obj.integrated <- ScaleData(Obj.integrated, 
+                            features = as.character(unique(top5_nucleous$gene)), 
+                            assay = "RNA")
+DoHeatmap(Obj.integrated, 
+          features = as.character(unique(top5_nucleous_nucleous$gene)), 
+          group.by = sel.clust,
+          assay = "RNA")
+
+DotPlot(Obj.integrated, 
+        features = rev(as.character(unique(top5_nucleous$gene))), 
+        group.by = sel.clust,
+        assay = "RNA") + coord_flip()
+```
+
+```{r plot staked vnplot}
+# select all cells in cluster 1
+features1 <- top5_nucleous %>% distinct(gene) %>% pull() %>% head(10)
+
+# to stack vnplots -> stack=T , flip = T
+#seurat_integrated %>% to name clusters
+Obj.integrated %>%
+VlnPlot(features = features1, 
+        stack=T , 
+        flip = T) +
+  NoLegend() + ggtitle('Single Nucleous')
+
+VlnPlot(Obj.integrated, features = features1, stack=T , flip = T) & 
+  theme(legend.position = "bottom",
+        legend.direction = "horizontal")
+```
+
+
+
+Other kinds of Find Markers
+
+Identification of conserved markers for each cluster
+
+It looks for genes that are diff expressed/present within each condition first, and then reports those genes that are conserved in the cluster across all conditions
+Useful with more than one condition to identify cell type markers that are conserved across conditions.
+`FindConservedMarkers` function separates genes by sample group/condition. Then, it performs DE testing for a single specific cluster against all the others
+The output is matrix containing a ranked list of putative markers listed by gene ID for the cluster we specified, and associated stats. Below some columns showed in the matrix:
+- condition_avg_logFC: average log fold change for condition. Positive values indicate that the gene is more highly expressed in the cluster.
+- condition_pct.1: percentage of cells where the gene is detected in the cluster for condition
+- condition_pct.2: percentage of cells where the gene is detected on average in the other clusters for condition
+- condition_p_val_adj: adjusted p-value for condition, based on bonferroni correction using all genes in the dataset, used to determine significance
+
+NOTE: When looking at the output, we suggest *looking for markers with large differences in expression between `pct.1` and `pct.2` and larger fold changes*. For instance if `pct.1` = 0.90 and `pct.2` = 0.80, it may not be as exciting of a marker. However, if `pct.2` = 0.1 instead, the bigger difference would be more convincing. Also, of interest is if the majority of cells expressing the marker is in my cluster of interest. If `pct.1` is low, such as 0.3, it may not be as interesting. Both of these are also possible parameters to include when running the function, as described above.
+
+NOTE: !!!!! The function fail because some clusters that do not have enough cells for a particular group !!!!
+run `FindAllMarkers()` instead (Above).
+```{r conserved marker}
+## DO NOT RUN ##
+
+# set our default assay. We want to use the normalized data, not the integrated data
+DefaultAssay(Obj.integrated) <- "RNA"
+
+# gene annotation information
+annotations <- read_csv(paste0(folder_path,"/Data/annotation.csv"))
+
+# Create function to get conserved markers for any given cluster
+get_conserved <- function(cluster, group){
+  FindConservedMarkers(Obj.integrated,
+                     ident.1 = cluster, # specify a single cluster 
+                     grouping.var = "orig.ident", 
+                     only.pos = TRUE,
+		                 min.diff.pct = 0.25,
+		                 max.cells.per.ident = 50,
+                     min.pct = 0.25, # detect at a minimum percentage in either of the two groups of celss
+		                 logfc.threshold = 0.25) %>%
+    rownames_to_column(var = "gene") %>%
+    left_join(y = annotations %>% distinct(gene_name, description),
+               by = c("gene" = "gene_name")) %>%
+    cbind(cluster_id = cluster, .)
+}
+
+# Iterate function across desired clusters
+conserved_markers <- map_dfr(c(levels(Obj.integrated)), get_conserved)
+
+```
+
+
+```{r another annotation}
+# Load additional packages
+library(enrichR)
+
+# Check available databases to perform enrichment (then choose one)
+enrichR::listEnrichrDbs() %>% filter(if_any(everything(), ~ str_detect(. ,"Mouse"))) 
+
+# Perform enrichment
+enrich_results <- enrichr(genes = DGE_cell_selection$gene[DGE_cell_selection$cluster == 
+    "Covid"], databases = "KEGG_2019_Mouse")[[1]]
+```
+
+
+
+

@@ -1,0 +1,184 @@
+---
+title: "scRNA_vs_sn_RNAseq_clustering"
+author: "Ricardo Silva"
+date: "5/7/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      eval=FALSE, 
+                      message=FALSE, 
+                      warning=FALSE)
+```
+
+```{r CLEAR EVERYTHING, eval=FALSE, include=FALSE}
+# unload all non-base packages
+lapply(names(sessionInfo()$otherPkgs), function(pkgs)
+  detach(
+    paste0('package:', pkgs),
+    character.only = T,
+    unload = T,
+    force = T
+))
+
+rm(list=ls())
+```
+
+```{r}
+#install.packages('Seurat')
+#devtools::install_github("immunogenomics/harmony")
+```
+
+```{r load libraries, message=FALSE, warning=FALSE, include=FALSE}
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(clustree)
+  library(data.table)
+  library(RColorBrewer)
+  library(sctransform)
+  library(scran)
+  library(org.Mm.eg.db)
+  library(clusterProfiler)
+  library(formattable)
+  library(patchwork)
+  library(tidyseurat) # to be compatible with Seurat and tidyverse APIs
+  library(tidyverse)
+})
+
+```
+
+```{r}
+folder_path <- getwd()
+source(paste0(folder_path,"/Script/theme_publication.R"))
+Merged.sc <- read_rds(paste0(folder_path,"/Data/Merged.sc.clean.cc.cyclone.clust.RRPS.rds"))
+Obj.integrated <- read_rds(paste0(folder_path,"/Data/Obj.integrated.sc_vs_sn.dim.red.RRPS.rds"))
+```
+
+Useful links:
+<https://nbisweden.github.io/workshop-scRNAseq/exercises>
+<https://hbctraining.github.io/scRNA-seq_online/schedule/>
+
+#############################################
+Perform clustering in the integrated data
+#############################################
+
+```{r clustering}
+# Determine the K-nearest neighbor graph
+Obj.integrated <- FindNeighbors(Obj.integrated, dims = 1:30)
+
+# Determine the clusters for various resolutions 
+Obj.integrated <- FindClusters(Obj.integrated, resolution = c(0.4, 0.6, 0.7, 0.8, 0.9, 1.0, 1.4))
+
+# each time you run clustering, the data is stored in meta data columns:
+# seurat_clusters - lastest results only integrated_snn_res.XX - for each different
+# resolution you test.
+
+# Extract resolutions name
+snn.res <- Obj.integrated@meta.data %>% 
+  colnames() %>%
+  str_subset('integrated_snn')
+
+# plot each resolution
+plot.res <- map(snn.res, ~DimPlot(Obj.integrated, reduction = "umap", group.by = .))
+wrap_plots(plot.res)
+
+# Assign identity of clusters
+Idents(object = Obj.integrated) <- "integrated_snn_res.0.7"
+#Idents(object = Obj.integrated) <- "integrated_snn_res.0.8"
+
+# look at the cluster IDs of the first 5 cells
+head(Idents(Obj.integrated), 5)
+# number of clusters
+Idents(Obj.integrated) %>% n_distinct()
+
+```
+
+```{r segregating}
+# Extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+n_cells_intg <- FetchData(Obj.integrated,
+                     vars = c("ident", "orig.ident")) %>%
+        count(ident, orig.ident) %>%
+        pivot_wider(names_from = "ident", values_from = "n") # is different from the data before integration
+
+# View table
+View(n_cells_intg)
+```
+
+Exploration of the PCs driving the different clusters
+
+We can explore how well the PCs separate the cell types (i.e., clusters).
+First we extract the UMAP coordinates using `FetchData` function.
+```{r pc driving}
+# Defining the information in the seurat object of interest
+columns <- c(paste0("PC_", 1:30),
+            "ident",
+            "UMAP_1", "UMAP_2")
+
+# Extracting this data from the seurat object
+pc_data <- FetchData(Obj.integrated, 
+                     vars = columns)
+
+```
+
+The cells are colored by their PC score for each respective PC
+
+```{r pc driving 2}
+# add cluster label to center of cluster on UMAP
+umap_label <- pc_data %>% group_by(ident) %>%
+  summarise(x = mean(UMAP_1), y = mean(UMAP_2))
+
+map(paste0("PC_", 1:15), function(pc){ # apply a function to each PC from 1 to 30
+  ggplot(pc_data, 
+         aes(UMAP_1, UMAP_2)) +
+        geom_point(aes_string(color = pc), alpha = 0.7) + # aesthetic mappings
+        scale_color_gradient(guide = FALSE,
+                             low = "grey90",
+                             high = "blue") +
+        geom_text(data = umap_label,
+                  aes(label = ident, x, y)) +
+      ggtitle(pc)
+}) %>%
+  cowplot::plot_grid(plotlist = .) # %>%
+ # ggsave(paste0(folder_path,"/Output/Plots/driving_pcs_16_30.tiff", width = 45, height = 27, units = "cm"))
+
+map(paste0("PC_", 16:30), function(pc){ # apply a function to each PC from 1 to 30
+  ggplot(pc_data, 
+         aes(UMAP_1, UMAP_2)) +
+        geom_point(aes_string(color = pc), alpha = 0.7) + # aesthetic mappings
+        scale_color_gradient(guide = FALSE,
+                             low = "grey90",
+                             high = "blue") +
+        geom_text(data = umap_label,
+                  aes(label = ident, x, y)) +
+      ggtitle(pc)
+}) %>%
+  cowplot::plot_grid(plotlist = .) #%>%
+ # ggsave(paste0(folder_path,"/Output/Plots/driving_pcs_16_30.tiff", width = 45, height = 27,  units = "cm"))
+```
+
+Check the genes driving the PCs, for example the top 5 genes that drive the first 5 PCs
+
+```{r pca results}
+# Examine PCA results 
+print(Obj.integrated[["pca"]], dims = 1:5, nfeatures = 5)
+```
+
+```{r save}
+write_rds(Obj.integrated, paste0(folder_path,"/Data/Obj.integrated.cluster.RRPS.rds"))
+
+rm(list = setdiff(ls(), c("Merged.sc", "folder_path", "Obj.integrated")))
+source(paste0(folder_path,"/Script/theme_publication.R"))
+
+Obj.integrated <- read_rds(paste0(folder_path,"/Data/Obj.integrated.cluster.RRPS.rds"))
+```
+
+```{r}
+metadata <- Obj.integrated %>% pluck("meta.data")
+metadata %>% distinct(orig.ident)
+Idents(Obj.integrated) <- "orig.ident"
+single_cell <- subset(Obj.integrated, ident = "P0s_cell_RNAseq")
+single_nucleous <- subset(Obj.integrated, ident = "P0s_nucleous_RNAseq")
+```

@@ -1,0 +1,383 @@
+---
+title: "scRNA_vs_snRNAseq"
+author: "Ricardo Silva"
+date: "3/23/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      eval=FALSE, 
+                      message=FALSE, 
+                      warning=FALSE)
+```
+
+```{r CLEAR EVERYTHING, eval=FALSE, include=FALSE}
+# unload all non-base packages
+lapply(names(sessionInfo()$otherPkgs), function(pkgs)
+  detach(
+    paste0('package:', pkgs),
+    character.only = T,
+    unload = T,
+    force = T
+))
+
+rm(list=ls())
+
+```
+
+```{r}
+#install.packages('Seurat')
+#devtools::install_github("immunogenomics/harmony")
+```
+
+```{r load libraries, message=FALSE, warning=FALSE, include=FALSE}
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(clustree)
+  library(data.table)
+  library(RColorBrewer)
+  library(sctransform)
+  library(scran)
+  library(org.Mm.eg.db)
+  library(clusterProfiler)
+  library(formattable)
+  library(patchwork)
+  library(tidyseurat) # to be compatible with Seurat and tidyverse APIs
+  library(tidyverse)
+})
+
+
+```
+
+```{r}
+folder_path <- getwd()
+source(paste0(folder_path,"/Script/theme_publication.R"))
+```
+
+Useful links:
+<https://nbisweden.github.io/workshop-scRNAseq/exercises>
+<https://hbctraining.github.io/scRNA-seq_online/schedule/>
+
+Iniciar a analise com o arquivo que Giovane enviou
+
+O dado enviado eh o resultado apos "Perform dimension reduction and clustering" and"Using sctransformation in Seurat". Objeto `Merged.sc.cc.SCT.PCA.RDS`
+
+Culstering analysis is used to determine the cell types present in the dataset based on the most variable genes. This variability helps us to define the major sources of variation in the dataset which should define our cell types. <https://hbctraining.github.io/scRNA-seq_online/lessons/postQC_workflow.html>
+
+O arquivo ja foi SCTrnsformed (Variance Stabilizing Transformations for Single Cell UMI Data - The transformation is based on a negative binomial regression model with regularized parameters.) using the function `SCTransform()` <https://satijalab.org/seurat/articles/sctransform_vignette.html>.
+
+After that the `RunPCA()` was performed
+
+Data was normalized and variance stabilized using regularized negative binomial regression
+
+
+```{r perform clustering, warning = FALSE, message = FALSE}
+# Read RDS and bring back the object
+Merged.sc <- read_rds(paste0(folder_path,"/Data/Merged.sc.cc.SCT.PCA.RDS"))
+
+Merged.sc %>% DimPlot(reduction = "pca", group.by = c("orig.ident", "Phase.Cyclone"))
+```
+
+In the metadata dataframe the 3 first columns are:
+`orig.ident`: this column will contain the sample identity if known. It will default to the value we provided for the project argument when loading in the data
+`nCount_RNA`: this column represents the number of UMIs per cell
+`nFeature_RNA`: this column represents the number of genes detected per cell
+
+```{r}
+# create a metadata file
+metadata <- Merged.sc %>% pluck("meta.data")
+#Merged.sc$P0s_cell_RNAseq <- NULL # to delete a column from seurat metadata
+#Merged.sc$sex <- NULL
+#metadata <- Merged.sc %>% pluck("meta.data")
+#metadata = Merged.sc[[]]
+```
+
+Number of genes detected per UMI
+more genes per UMI -> more complex the data is
+
+```{r}
+#add number of genes per UMI for each cell to metadata
+Merged.sc$log10GenesPerUMI <- log10(Merged.sc$nFeature_RNA / log10(Merged.sc$nCount_RNA))
+View(metadata <- Merged.sc %>% pluck("meta.data"))
+```
+
+```{r}
+# Rename columns
+metadata <- metadata %>%
+        dplyr::rename(nUMI = nCount_RNA,
+                      nGene = nFeature_RNA)
+
+# Add metadata back to Seurat object
+Merged.sc@meta.data <- metadata
+```
+
+Assessing the quality metrics
+```{r}
+# Visualize the number of cell counts per type
+metadata %>% 
+  ggplot(aes(x = orig.ident, fill = orig.ident)) +
+  geom_bar() +
+  theme_Publication_3() +
+  theme(plot.title = element_text(hjust = 0.5)) +
+  ggtitle("NCells")
+
+# Number of UMIs/transcripts per cell
+metadata %>% 
+  ggplot(aes(color = orig.ident, x = nUMI, fill = orig.ident)) +
+  geom_density(alpha = 0.4) +
+  scale_x_log10() +
+  theme_Publication_3() +
+  ylab("Cell Density") +
+  geom_vline(xintercept = 500)
+
+# Visualize the distribution of genes detected per cell via histogram
+metadata %>% 
+  ggplot(aes(color = orig.ident, x = nGene, fill = orig.ident)) +
+  geom_density(alpha = 0.4) +
+  scale_x_log10() +
+  theme_Publication_3() +
+  ylab("Cell Density") +
+  geom_vline(xintercept = 500)
+
+# Visualize the distribution of genes detected per cell via boxplot
+metadata %>% 
+  	ggplot(aes(x = orig.ident, y = log10(nGene), fill = orig.ident))  + 
+  	geom_boxplot() + 
+    theme_Publication_3() +
+    theme(plot.title = element_text(hjust=0.5)) +
+  	ggtitle("NCells vs NGenes")
+
+# Visualize the correlation between genes detected and number of UMIs and determine whether strong presence of cells with low numbers of genes/UMIs
+metadata %>% 
+  	ggplot(aes(x=nUMI, y=nGene, color=percent.mt)) + 
+  	geom_point(alpha = 0.7) + 
+	  scale_colour_gradient(low = "gray90", high = "black") +
+  	stat_smooth(method=lm) +
+  	scale_x_log10() + 
+  	scale_y_log10() + 
+  	theme_Publication_3() +
+  	#geom_vline(xintercept = 500) +
+  	#geom_hline(yintercept = 250) +
+    facet_wrap(~orig.ident) +
+    theme(strip.text = element_text(hjust=0.5))
+
+# Visualize the distribution of mitochondrial gene expression detected per cell
+metadata %>% 
+  	ggplot(aes(color=orig.ident, x=percent.mt, fill=orig.ident)) + 
+  	geom_density(alpha = 0.2) + 
+  	scale_x_log10() + 
+  	#geom_vline(xintercept = 0.2) +
+  	theme_Publication_3() 
+
+# Visualize the overall complexity of the gene expression by visualizing the genes detected per UMI
+metadata %>%
+  	ggplot(aes(x=log10GenesPerUMI, color = orig.ident, fill=orig.ident)) +
+  	geom_density(alpha = 0.2) +
+  #	geom_vline(xintercept = 0.8)
+  	theme_Publication_3() 
+```
+
+Clustering cells based on top PCs (metagenes)
+
+Determine the 'dimensionality' of the dataset
+
+`FindNeighbors()` function is based on KNN graph design on the euclidean distance in PCA space
+`FinClusters()` function implements modularity optimization techniques (e.g., Louvain algorithm or SLM) to iteratively group cells together
+`Idents()` function shows the clusters
+
+```{r elbowplot}
+ElbowPlot(Merged.sc, ndims = 30)
+```
+
+this is a rather laborious way of determining the optimal FindNeighbors and cluster resolutions. It does FindNeibours for all dims from 15 to 30 (which is something Seurat's SCtransform recommends -- well, they say just do 30 dims. I find that not always optimal). Then for every dimension, I do FindClusters from 0.1 to 1 resolution (so going through 10 steps). The I use clustree to plot the "evolution" of cluster divisions for every one. This plots how the clusters are divided as the cluster resolution changes. I spit this out as a rather sizable PDF. Then I look for the neighbours with the least amount of cells transitioning between clusters, and then clusters that remain stable for generally two resolutions.
+```{r clustering}
+#```{r eval=FALSE, include=FALSE}
+# Determine the K-nearest neighbor graph (Build graph)
+pdf(paste0(folder_path, "/Data/Merged.sc_phases.merged.cc.neighbour.finding.PDF"))
+Merged.sc15 <- FindNeighbors(Merged.sc, dims = 1:15)
+Merged.sc16 <- FindNeighbors(Merged.sc, dims = 1:16)
+Merged.sc17 <- FindNeighbors(Merged.sc, dims = 1:17)
+Merged.sc18 <- FindNeighbors(Merged.sc, dims = 1:18)
+Merged.sc19 <- FindNeighbors(Merged.sc, dims = 1:19)
+Merged.sc20 <- FindNeighbors(Merged.sc, dims = 1:20)
+Merged.sc21 <- FindNeighbors(Merged.sc, dims = 1:21)
+Merged.sc22 <- FindNeighbors(Merged.sc, dims = 1:22)
+Merged.sc23 <- FindNeighbors(Merged.sc, dims = 1:23)
+Merged.sc24 <- FindNeighbors(Merged.sc, dims = 1:24)
+Merged.sc25 <- FindNeighbors(Merged.sc, dims = 1:25)
+Merged.sc26 <- FindNeighbors(Merged.sc, dims = 1:26)
+Merged.sc27 <- FindNeighbors(Merged.sc, dims = 1:27)
+Merged.sc28 <- FindNeighbors(Merged.sc, dims = 1:28)
+Merged.sc29 <- FindNeighbors(Merged.sc, dims = 1:29)
+Merged.sc30 <- FindNeighbors(Merged.sc, dims = 1:30)
+
+# Determine the clusters for various resolutions 
+x15 <- FindClusters(Merged.sc15, resolution = seq(0.1, 1, by=0.1))
+x16 <- FindClusters(Merged.sc16, resolution = seq(0.1, 1, by=0.1))
+x17 <- FindClusters(Merged.sc17, resolution = seq(0.1, 1, by=0.1))
+x18 <- FindClusters(Merged.sc18, resolution = seq(0.1, 1, by=0.1))
+x19 <- FindClusters(Merged.sc19, resolution = seq(0.1, 1, by=0.1))
+x20 <- FindClusters(Merged.sc20, resolution = seq(0.1, 1, by=0.1))
+x21 <- FindClusters(Merged.sc21, resolution = seq(0.1, 1, by=0.1))
+x22 <- FindClusters(Merged.sc22, resolution = seq(0.1, 1, by=0.1))
+x23 <- FindClusters(Merged.sc23, resolution = seq(0.1, 1, by=0.1))
+x24 <- FindClusters(Merged.sc24, resolution = seq(0.1, 1, by=0.1))
+x25 <- FindClusters(Merged.sc25, resolution = seq(0.1, 1, by=0.1))
+x26 <- FindClusters(Merged.sc26, resolution = seq(0.1, 1, by=0.1))
+x27 <- FindClusters(Merged.sc27, resolution = seq(0.1, 1, by=0.1))
+x28 <- FindClusters(Merged.sc28, resolution = seq(0.1, 1, by=0.1))
+x29 <- FindClusters(Merged.sc29, resolution = seq(0.1, 1, by=0.1))
+x30 <- FindClusters(Merged.sc30, resolution = seq(0.1, 1, by=0.1))
+
+# clustering trees
+clustree(x15) + ggtitle("FindNeighbours 15 dimensions, cluster res 0.1 to 1")
+clustree(x16) + ggtitle("FindNeighbours 16 dimensions, cluster res 0.1 to 1")
+clustree(x17) + ggtitle("FindNeighbours 17 dimensions, cluster res 0.1 to 1")
+clustree(x18) + ggtitle("FindNeighbours 18 dimensions, cluster res 0.1 to 1")
+clustree(x19) + ggtitle("FindNeighbours 19 dimensions, cluster res 0.1 to 1")
+clustree(x20) + ggtitle("FindNeighbours 20 dimensions, cluster res 0.1 to 1")
+clustree(x21) + ggtitle("FindNeighbours 21 dimensions, cluster res 0.1 to 1")
+clustree(x22) + ggtitle("FindNeighbours 22 dimensions, cluster res 0.1 to 1")
+clustree(x23) + ggtitle("FindNeighbours 23 dimensions, cluster res 0.1 to 1")
+clustree(x24) + ggtitle("FindNeighbours 24 dimensions, cluster res 0.1 to 1")
+clustree(x25) + ggtitle("FindNeighbours 25 dimensions, cluster res 0.1 to 1")
+clustree(x26) + ggtitle("FindNeighbours 26 dimensions, cluster res 0.1 to 1")
+clustree(x27) + ggtitle("FindNeighbours 27 dimensions, cluster res 0.1 to 1")
+clustree(x28) + ggtitle("FindNeighbours 28 dimensions, cluster res 0.1 to 1")
+clustree(x29) + ggtitle("FindNeighbours 29 dimensions, cluster res 0.1 to 1")
+clustree(x30) + ggtitle("FindNeighbours 30 dimensions, cluster res 0.1 to 1")
+
+dev.off()
+
+rm(list = setdiff(ls(),c("Merged.sc", "Obj.integrated",'folder_path')))
+# rm(list = setdiff(ls(),ls() %>% str_subset("int")))
+source(paste0(folder_path,"/Script/theme_publication.R"))
+```
+
+Then here, use the best FindNeighbours and FindClusters pair that were empirically determined by looking at the PDF in the last step, looking for minimal crossover of cells between cluster resolutions, and looking for stability between resolutions.
+```{r clustering}
+# build graph
+Merged.sc <- FindNeighbors(Merged.sc, dims = 1:30)
+
+# Clustering with louvain (algorithm 1) default
+Merged.sc <- FindClusters(Merged.sc, resolution = 0.8)
+Merged.sc <- FindClusters(Merged.sc, resolution = 0.7)
+
+# look at the cluster IDs of the first 5 cells
+head(Idents(Merged.sc), 5)
+# number of clusters
+Idents(Merged.sc) %>% n_distinct()
+
+# run linear dimention reduction
+Merged.sc <- RunPCA(Merged.sc, verbose = FALSE)
+
+# Run non-linear dimension reduction on a graph
+Merged.sc <- RunUMAP(Merged.sc, dims = 1:30)
+Merged.sc <- RunTSNE(Merged.sc, dims = 1:30)
+
+```
+
+```{r}
+#write_rds(Merged.sc, paste0(folder_path,"/Data//E14expt.merged.cc.cyclone.clust.25.06.RDS"))
+#Merged.sc <- read_rds(paste0(folder_path,"/Data//E14expt.merged.cc.cyclone.clust.25.06.RDS"))
+#write_rds(Merged.sc_phases, file = "d:/low protein/snRNAseq/NPD_LPD_Bioinformatics/RDS.files/E14expt.merged.cc.seurat.phase.clust.29.08.RDS")
+```
+
+```{r}
+#check quality of clusters
+VlnPlot(Merged.sc, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), pt.size = 0)
+# VlnPlot(Merged.sc.TSNE, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), pt.size = 0)
+```
+
+Exploration after clustering
+
+Segregation of clusters by sample
+```{r segregation}
+# extract identity and sample information from seurat object to determine the number of cells per cluster per sample
+n_cells <- FetchData(Merged.sc, vars = c("ident", "orig.ident")) %>%
+  count(ident,orig.ident) %>%
+  pivot_wider(names_from = "ident", values_from = 'n')
+
+```
+
+```{r plot umap and tsne by orig and clusters}
+p.umap <- DimPlot(Merged.sc, 
+                  reduction = "umap", 
+                  group.by = c( "seurat_clusters", "orig.ident"), 
+                  label = TRUE, 
+                  label.size= 8, 
+                  combine = T) 
+p1 <- p.umap +
+  NoLegend() + 
+  ggtitle("Cluster resolution 0.8, 30 dimension UMAP, SCT") + 
+  theme(plot.title = element_text(size=12))
+
+
+p.tsne <- DimPlot(Merged.sc, 
+                  reduction = "tsne", 
+                  split.by = "orig.ident", 
+                  label = TRUE, 
+                  label.size = 8) 
+p2 <- p.tsne + 
+  NoLegend() + 
+  ggtitle("Cluster resolution 0.8, 30 dimension TSNE, SCT") + 
+  theme(plot.title = element_text(size=12))
+
+p1 / p2
+
+```
+
+```{r plot by sex and phases}
+p.umap.sex <- DimPlot(Merged.sc, 
+                      reduction = "umap", 
+                      group.by = "Sex")
+p1.sex <- p.umap.sex + 
+  ggtitle("Cluster by sex, UMAP") + 
+  theme(plot.title = element_text(size=12))
+
+p.umap.cyclone <- DimPlot(Merged.sc, 
+                          reduction = "umap", 
+                          split.by = "Phase.Cyclone", label.size = 8) 
+p2.cyclone <- p.umap.cyclone +
+   ggtitle("Cyclone CC regressed\nCyclone cell cycle phase UMAP") + 
+   theme(plot.title = element_text(size=12))
+
+# Plot the PCA and UMAP colored by cell cycle phase
+p.pca.cyclone <- DimPlot(Merged.sc,
+        reduction = "pca",
+        group.by= "Phase.Cyclone",
+        split.by = "Phase.Cyclone") 
+p3.cyclone <- p.pca.cyclone +
+   ggtitle("Cyclone CC regressed\nCyclone cell cycle phase PCA") + 
+  theme(plot.title = element_text(size=12))
+
+p.umap.cyclone1 <- DimPlot(Merged.sc,
+        reduction = "umap",
+        group.by= "Phase.Cyclone",
+        split.by = "Phase.Cyclone") 
+p4.cyclone <- p.umap.cyclone1 +
+   ggtitle("Cyclone CC regressed\nCyclone cell cycle phase UMAP") + 
+  theme(plot.title = element_text(size=12))
+  
+
+
+p1.sex + p2.cyclone & theme_Publication_3() & 
+  plot_layout(guides = "collect") &
+  theme(legend.position = 'bottom')
+
+```
+
+```{r save}
+write_rds(Merged.sc, paste0(folder_path,"/Data/Merged.sc.clean.cc.cyclone.clust.RRPS.rds"))
+
+rm(list = setdiff(ls(), c("Merged.sc", "folder_path")))
+source(paste0(folder_path,"/Script/theme_publication.R"))
+
+Merged.sc <- read_rds(paste0(folder_path,"/Data/Merged.sc.clean.cc.cyclone.clust.RRPS.rds"))
+```
+
+
+Integration no arquivo scRNA_vs_sn_RNAseq_integration.Rmd

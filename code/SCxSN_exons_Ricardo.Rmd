@@ -1,0 +1,856 @@
+---
+title: "sn_vs_sc Exons"
+author: "Ricardo"
+date: "6/21/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r CLEAR EVERYTHING, eval=FALSE, include=FALSE}
+# unload all non-base packages
+lapply(names(sessionInfo()$otherPkgs), function(pkgs)
+  detach(
+    paste0('package:', pkgs),
+    character.only = T,
+    unload = T,
+    force = T
+))
+
+rm(list=ls())
+```
+
+# Packages and initial steps
+
+```{r load libraries, message=FALSE, warning=FALSE, include=FALSE}
+# load the packages
+# main packs to start with
+pcks <- c('Seurat','data.table', 'formattable','tidyverse')
+
+if(sum(as.numeric(!pcks %in% installed.packages())) != 0){
+  installation <- pcks[!pcks %in% installed.packages()]
+  for(i in 1:length(installation)) {
+    install.packages(installation, dependencies = T)
+    break()}
+  suppressPackageStartupMessages(
+  sapply(pcks,require,character.only = T)
+) 
+} else {
+  suppressPackageStartupMessages(
+  sapply(pcks,require,character.only = T)
+) 
+}
+
+rm(pcks)
+
+bio.pcks <- c('tidyseurat',"scran", 'org.Mm.eg.db', 'clusterProfiler')
+
+if(sum(as.numeric(!bio.pcks %in% installed.packages())) != 0){
+  installation <- bio.pcks[!bio.pcks %in% installed.packages()]
+  for(i in 1:length(installation)) {
+    BiocManager::install(installation, dependencies = T)
+    break()}
+  suppressPackageStartupMessages(
+  sapply(bio.pcks,require,character.only = T)
+) 
+} else {
+  suppressPackageStartupMessages(
+  sapply(bio.pcks,require,character.only = T)
+) 
+}
+
+rm(bio.pcks)
+```
+
+```{r folder_path and theme}
+folder_path <- getwd()
+source(paste0(folder_path,"/Script/theme_publication.R"))
+
+# Use colourblind-friendly colours
+theme_sc <- list(scale_fill_manual(values=friendly_cols),
+                scale_color_manual(values=friendly_cols),
+                theme_sc())
+```
+
+
+```{r}
+# library(devtools)
+# install_github("immunogenomics/harmony")
+```
+
+
+Load the 10X CellRanger filtered_feature_bc_matrix data and set up the Seurat objects
+
+```{r}
+#Read RDS and bring back the object
+# Merged.sc <- read_rds(file = paste0(folder_path,"/Data/Merged.06152021cc.RDS"))
+```
+
+
+```{r}
+# metadata.Merged <- Merged.sc[[]]
+```
+
+# Prepare Data
+```{r}
+Obj.integrated <- readRDS(file = paste0(folder_path,"/Data/Obj.integrated.06182021cc.RDS"))
+
+#Obj.integrated %>% filter(orig.ident == 'SingleCellRNAseq')
+
+# Obj.integrated %>% 
+#     ggplot(aes(orig.ident, nCount_RNA, fill=orig.ident)) +
+#     geom_boxplot(outlier.shape=NA) +
+#     geom_jitter(width=0.1, alpha = 0.1)  +
+#   theme_sc
+
+```
+
+
+```{r}
+# Get number of cells per cluster and per sample of origin
+table_clusters = Obj.integrated %>% 
+  tidyseurat::count(seurat_clusters, orig.ident) %>% 
+  pivot_wider(values_from = "n", names_from = "orig.ident")
+
+# table_clusters = table(Obj.integrated@meta.data$seurat_clusters, Obj.integrated@meta.data$orig.ident)
+write_csv(table_clusters, file = paste0(folder_path,"/Output/Data/table_clusters_obj.integrated.csv"))
+```
+
+# UMAP
+```{r plot UMAP}
+Obj.integrated %>%
+    # UMAP plots for orig.ident and cluster
+    ggplot(aes(UMAP_1, UMAP_2, color = seurat_clusters)) +
+    geom_point(size = 0.5, alpha = 0.3) +
+    facet_wrap(~orig.ident) +
+    guides(colour = guide_legend(override.aes = list(size=2, alpha = 1))) +
+  theme_sc
+
+
+# plot with labels
+labels <- Obj.integrated %>% 
+  group_by(cell_type) %>% 
+  summarize(UMAP_1 = mean(UMAP_1), UMAP_2 = mean(UMAP_2))
+
+Obj.integrated %>%
+    # UMAP plots for orig.ident and cell_type
+    ggplot(aes(UMAP_1, UMAP_2, color = cell_type)) +
+    geom_point(size = 0.5, alpha = 0.25) +
+    ggrepel::geom_label_repel(data = labels, aes(label = cell_type)) +
+    facet_wrap(~orig.ident) +
+   # guides(colour = guide_legend(override.aes = list(size=2, alpha = 1))) +
+  theme_sc +
+  theme(legend.position = "none") 
+
+# DimPlot(Obj.integrated, 
+#         group.by = "cell_type", 
+#         split.by = "orig.ident", 
+#         ncol = 3, 
+#         label = T) & theme_sc
+
+```
+
+# Marker identification 
+```{r Identification of markers }
+DefaultAssay(Obj.integrated) <-'SCT'
+
+# find markers for every cluster compared to all remaining cells, report only the positive ones
+Obj.integrated.markers <-
+    Obj.integrated %>%
+    FindAllMarkers(only.pos = TRUE, 
+                   min.pct = 0.1, 
+                   logfc.threshold = 0.3) 
+
+# Identify top 100 markers per cluster and plot a heatmap
+Obj.integrated.markers %>% group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
+Obj.integrated.markers %>% group_by(cluster, orig.ident) %>% top_n(n = 100, wt = avg_log2FC)
+
+write_csv(Obj.integrated.markers,file = paste0(folder_path,"/Output/Data/Obj.integrated.markers.table.csv"))
+# Obj.integrated.markers <- read_csv(file = paste0(folder_path,"/Output/Data/Obj.integrated.markers.table.csv")) %>% rename(gene1 = 1)
+
+```
+
+
+```{r Identification of markers }
+DefaultAssay(Obj.integrated) <-'SCT'
+
+# all together
+Obj.integrated.markers <-
+    Obj.integrated %>%
+    FindAllMarkers(only.pos = TRUE, 
+                   min.pct = 0.1, 
+                   logfc.threshold = 0.3) 
+# save csv
+write_csv(Obj.integrated.markers,file = paste0(folder_path,"/Output/Data/Obj.integrated.markers.table.csv"))
+# Obj.integrated.markers <- read_csv(file = paste0(folder_path,"/Output/Data/Obj.integrated.markers.table.csv")) %>% rename(gene1 = 1)
+
+# find markers for each technique separately
+# only for single cell
+Obj.int.markers.singCell <- Obj.integrated %>%
+   filter(orig.ident == 'SingleCellRNAseq') %>%
+   FindAllMarkers(only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.3)
+# save csv
+write_csv(Obj.int.markers.singCell, file = paste0(folder_path,"/Output/Data/Obj.int.markers.singCell.csv"))
+
+# only for single nucleous1
+Obj.int.markers.singn1 <- Obj.integrated %>% 
+   filter(orig.ident == 'SingleNucRNAseq1') %>%
+   FindAllMarkers(only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.3)
+# save csv
+write_csv(Obj.int.markers.singn1, file = paste0(folder_path,"/Output/Data/Obj.int.markers.singn1.csv"))
+
+# only for single nucleous2
+Obj.int.markers.singn2 <- Obj.integrated %>% 
+   filter(orig.ident == 'SingleNucRNAseq2') %>%
+   FindAllMarkers(only.pos = TRUE, min.pct = 0.1, logfc.threshold = 0.3)
+
+# save csv
+write_csv(Obj.int.markers.singn2, file = paste0(folder_path,"/Output/Data/Obj.int.markers.singn2.csv"))
+```
+
+# top 10 markers
+```{r top 10 markers}
+# save top 10 genes for each cluster
+top10.markers <- Obj.integrated.markers %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+write_csv(top10.markers,file = paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.table.csv"))
+# top10.markers <- read_csv(file = paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.table.csv"))  %>%
+#   select(-1)
+
+# single cell
+top10.markers.sc <- Obj.int.markers.singCell %>% 
+                      group_by(cluster) %>% 
+                      top_n(n = 10, wt = avg_log2FC)
+write_csv(top10.markers.sc, file = paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.table.singlecell.csv"))
+# top10.markers.sc <- read_csv(paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.table.singlecell.csv"))
+
+# single nucleous1
+top10.markers.snuc1 <- Obj.int.markers.singn1 %>% 
+                        group_by(cluster) %>% 
+                        top_n(n = 10, wt = avg_log2FC)
+write_csv(top10.markers.snuc1, file = paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.table.singlenuc_1.csv"))
+#  top10.markers.snuc1 <- read_csv(paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.table.singlenuc_1.csv"))
+
+
+# single nucleous2
+# save top 10 genes for each cluster
+top10.markers.snuc2 <- Obj.int.markers.singn2 %>%
+                        group_by(cluster) %>%
+                        top_n(n = 10, wt = avg_log2FC)
+write_csv(top10.markers.snuc2, file = paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.table.singlenuc_2.csv"))
+# top10.markers.snuc2 <- read_csv(paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.table.singlenuc_2.csv"))
+```
+
+# Top 20 markers 
+```{r top 20 markers}
+# all
+top20.markers <- Obj.integrated.markers %>% 
+                    group_by(cluster) %>% 
+                    top_n(n = 20, wt = avg_log2FC)
+write_csv(top10.markers,file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.csv"))
+# top20.markers <- read_csv(file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.csv")) %>% select(-1)
+
+# single cell
+top20.markers.sc <- Obj.int.markers.singCell %>% 
+                      group_by(cluster) %>% 
+                      top_n(n = 20, wt = avg_log2FC)
+write_csv(top20.markers.sc, file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.table.singlecell.csv"))
+# top20.markers.sc <- read_csv(paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.table.singlecell.csv"))
+
+# single nucleous1
+top20.markers.snuc1 <- Obj.int.markers.singn1 %>% 
+                        group_by(cluster) %>% 
+                        top_n(n = 20, wt = avg_log2FC)
+write_csv(top20.markers.snuc1, file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.table.singlenuc_1.csv"))
+#  top20.markers.snuc1 <- read_csv(paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.table.singlenuc_1.csv"))
+
+
+# single nucleous2
+# save top 10 genes for each cluster
+top20.markers.snuc2 <- Obj.int.markers.singn2 %>%
+                        group_by(cluster) %>%
+                        top_n(n = 20, wt = avg_log2FC)
+write_csv(top20.markers.snuc2, file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.table.singlenuc_2.csv"))
+# top20.markers.snuc2 <- read_csv(paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.table.singlenuc_2.csv"))
+```
+
+# function to find the number of exons and length of a gene
+
+```{r}
+# load package to get NCBI API access
+library(rentrez)
+
+# make a function to map through the top 10 genes in each cluster
+find_exons_length <- function(gene){
+res <- entrez_search(db = "gene", term = glue::glue("{gene}[gene] AND (Mus musculus[orgn]"))
+esums <- entrez_summary(db = "gene", id = res$ids[1])
+# gene length
+all_the_links <- entrez_link(dbfrom='gene', id=res$ids[1], db='all')
+links <- all_the_links$links
+e_sum <- entrez_summary(db = "nuccore", id = links$gene_nuccore_refseqrna)
+# extract number of exons
+df <- tibble(gene = gene, 
+             id_ncbi = res$ids[1],
+             exons = as.numeric(extract_from_esummary(esums, "genomicinfo")$exoncount),
+             gi_nuccore = names(extract_from_esummary(e_sum, "slen")),
+             # gi_nuccore = ifelse(is.null(names(extract_from_esummary(e_sum, "slen"))), NA,
+             #                              names(extract_from_esummary(e_sum, "slen"))),
+          #   gi_nuccore = names(extract_from_esummary(e_sum, "slen")),
+             seqlen = as.numeric(extract_from_esummary(e_sum, "slen")),
+             description = extract_from_esummary(esums, "description"))
+return(df)
+}
+
+# find_exons_length("Cped1")
+
+# make another function to avoid the loop shutting down if it finds an error
+# possibly function returns values instead of errors
+# https://aosmith.rbind.io/2020/08/31/handling-errors/
+find_exons_length2 = possibly(.f = find_exons_length, otherwise = NULL)
+
+# find_exons_length("Plpp1")
+# find_exons_length2("Plpp1")
+
+
+```
+
+
+# Exons
+```{r number exons}
+# load package to get NCBI API access
+library(rentrez)
+
+# make a function to map through the top 10 genes in each cluster
+find_exons <- function(gene){
+res <- entrez_search(db = "gene", term = glue::glue("{gene}[gene] AND (Mus musculus[orgn]"))
+esums <- entrez_summary(db = "gene", id = res$ids[1])
+n_exons <- extract_from_esummary(esums, "genomicinfo")$exoncount
+# extract number of exons
+df <- tibble(gene = gene,
+                 id_ncbi = res$ids[1],
+                 exons = ifelse(is.null(n_exons), NA, as.numeric(n_exons)),
+                 description = ifelse(is.null(extract_from_esummary(esums, "description")), NA,
+                                              extract_from_esummary(esums, "description"))
+                 )
+return(df)
+}
+
+# make another function to avoid the loop shutting down if it finds an error
+# possibly function returns values instead of errors
+# https://aosmith.rbind.io/2020/08/31/handling-errors/
+find_exons2 = possibly(.f = find_exons, otherwise = NULL)
+
+# find_exons("Plpp1")
+# find_exons2("Plpp1")
+
+```
+
+
+```{r clean env}
+rm(list = setdiff(ls(), c("top10.markers.sc", " top10.markers.snuc1", " top10.markers.snuc2", "folder_path", "theme_sc","find_exons", " top10.markers.exons")))
+
+```
+
+## number exons top 10
+```{r number exons - top 10}
+# all
+# make a dataframe with the number of exons for each gene
+exons <- top10.markers %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map_df(find_exons)
+
+write_csv(exons,file = paste0(folder_path,"/Output/Data/top10.markers.exons.csv"))
+
+top10.markers.exons <- top10.markers %>% left_join(exons)
+
+write_csv(top10.markers.exons, file = paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.exon.table.csv"))
+# top10.markers.exons <- read_csv(paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.exon.table.csv"))
+
+# only single cell
+# make a dataframe with the number of exons for each gene
+exons.sc <- top10.markers.sc %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map_df(find_exons)
+
+write_csv(exons.sc, file = paste0(folder_path,"/Output/Data/top10.markers.exons.sc.csv"))
+
+top10.markers.exons.sc <- top10.markers.sc %>% left_join(exons.sc)
+
+write_csv(top10.markers.exons.sc, file = paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.exon.table.sc.csv"))
+# top10.markers.exons.sc <- read_csv(paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.exon.table.sc.csv"))
+
+# only single nucleous1
+# make a dataframe with the number of exons for each gene
+exons.sn1.error <- top10.markers.snuc1 %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map(find_exons2)
+
+# Finding the groups with errors
+exons.sn1.error %>%
+     keep(~is.null(.x))
+
+# remove empty elements
+exons.sn1 <- compact(exons.sn1.error) %>% bind_rows()
+
+write_csv(exons.sn1, file = paste0(folder_path,"/Output/Data/top10.markers.exons.sn1.csv"))
+
+top10.markers.exons.sn1 <- top10.markers.snuc1 %>% left_join(exons.sn1)
+
+write_csv(top10.markers.exons.sn1, file = paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.exon.table.sn1.csv"))
+
+
+# only single nucleous2
+# make a dataframe with the number of exons for each gene
+exons.sn2.error <- top10.markers.snuc2 %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map(find_exons2)
+
+# Finding the groups with errors
+exons.sn2.error %>%
+     keep(~is.null(.x))
+
+# remove empty elements
+exons.sn2 <- compact(exons.sn2.error) %>% bind_rows()
+
+write_csv(exons.sn2, file = paste0(folder_path,"/Output/Data/top10.markers.exons.sn2.csv"))
+
+top10.markers.exons.sn2 <- top10.markers.snuc2 %>% left_join(exons.sn2)
+
+write_csv(top10.markers.exons.sn2, file = paste0(folder_path,"/Output/Data/Obj.integrated.top10.markers.exon.table.sn2.csv"))
+
+```
+
+## number exons top 20
+```{r number exons - top 20}
+# all
+# make a dataframe with the number of exons for each gene
+exons <- top20.markers %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map_dfr(find_exons2)
+
+write_csv(exons,file = paste0(folder_path,"/Output/Data/top20.markers.exons.seqlen.csv"))
+
+top20.markers.exons <- top20.markers %>% left_join(exons)
+
+write_csv(top20.markers.exons, file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.exon.table.csv"))
+# top20.markers.exons <- read_csv(paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.exon.table.csv"))
+
+# only single cell
+# make a dataframe with the number of exons for each gene
+exons.sc <- top20.markers.sc %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map_df(find_exons2)
+
+write_csv(exons.sc, file = paste0(folder_path,"/Output/Data/top20.markers.exons.sc.csv"))
+
+top20.markers.exons.sc <- top20.markers.sc %>% left_join(exons.sc)
+
+write_csv(top20.markers.exons.sc, file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.exon.table.sc.csv"))
+# top20.markers.exons.sc <- read_csv(paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.exon.table.sc.csv"))
+
+# only single nucleous1
+# make a dataframe with the number of exons for each gene
+exons.sn1.error <- top20.markers.snuc1 %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map(find_exons2)
+
+# Finding the groups with errors
+# exons.sn1.error %>%
+#      keep(~is.null(.x))
+
+# remove empty elements
+exons.sn1 <- compact(exons.sn1.error) %>% bind_rows()
+
+write_csv(exons.sn1, file = paste0(folder_path,"/Output/Data/top20.markers.exons.sn1.csv"))
+
+top20.markers.exons.sn1 <- top20.markers.snuc1 %>% left_join(exons.sn1)
+
+write_csv(top20.markers.exons.sn1, file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.exon.table.sn1.csv"))
+# top20.markers.exons.sn1 <- read_csv(file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.exon.table.sn1.csv"))
+
+# only single nucleous2
+# make a dataframe with the number of exons for each gene
+exons.sn2.error <- top20.markers.snuc2 %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map(find_exons2)
+
+# Finding the groups with errors
+# exons.sn2.error %>%
+#      keep(~is.null(.x))
+
+# remove empty elements
+exons.sn2 <- compact(exons.sn2.error) %>% bind_rows()
+
+write_csv(exons.sn2, file = paste0(folder_path,"/Output/Data/top20.markers.exons.sn2.csv"))
+
+top20.markers.exons.sn2 <- top20.markers.snuc2 %>% left_join(exons.sn2)
+
+write_csv(top20.markers.exons.sn2, file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.exon.table.sn2.csv"))
+# top20.markers.exons.sn2 <- read_csv(file = paste0(folder_path,"/Output/Data/Obj.integrated.top20.markers.exon.table.sn2.csv"))
+
+```
+
+
+```{r clean env}
+rm(list = setdiff(ls(), c("folder_path", "theme_sc","top10.markers", "top10.markers.sc", " top10.markers.snuc1", " top10.markers.snuc2","top10.markers.exons", "top10.markers.exons.sc" ,"top10.markers.exons.sn1", "top10.markers.exons.sn2")))
+
+```
+
+## box plot top10
+```{r box plot - top 10}
+top10.markers.exons <- top10.markers.exons %>% mutate(technique =  paste0("all"))
+top10.markers.exons.sc <- top10.markers.exons.sc %>% mutate(technique =  paste0("single_cell"))
+top10.markers.exons.sn1 <- top10.markers.exons.sn1 %>% 
+                                mutate(technique =  paste0("single_nuc_1")) %>%
+                                drop_na() %>%
+                                mutate(id_ncbi =  as.numeric(id_ncbi))
+top10.markers.exons.sn2 <- top10.markers.exons.sn2 %>% 
+                                mutate(technique =  paste0("single_nuc_2")) %>%
+                                drop_na() %>%
+                                mutate(id_ncbi =  as.numeric(id_ncbi))
+
+df.exons <- bind_rows(top10.markers.exons, top10.markers.exons.sc, top10.markers.exons.sn1, top10.markers.exons.sn2)
+
+df.exons %>%
+  group_by(technique, cluster) %>%
+  summarize(mean = mean(exons),
+            sd = sd(exons),
+            min = min(exons),
+            max = max(exons)) %>%
+  ggplot(aes(cluster, mean)) +
+  geom_point() +
+  geom_line() +
+  facet_grid(.~technique, scales = "free_y")
+
+df.exons %>%
+  ggplot(aes(cluster, exons)) +
+  geom_boxplot(outlier.size = 0.2) +
+   geom_jitter(size=0.4, alpha=0.5) +
+  facet_grid(.~technique, scales = "free_y") +
+  theme_sc
+
+df.exons %>%
+  filter(cluster %in% c('NPC_naive', 'NPC_prol', 'NPC_comm')) %>%
+  ggplot(aes(cluster, exons, fill = technique)) +
+  geom_boxplot(outlier.size = 0.2, alpha = 0.3) +
+   geom_jitter(size=0.6, alpha=0.5) +
+ # facet_grid(.~technique, scales = "free_y") +
+  theme_sc
+
+
+df.exons %>%
+  ggplot(aes(technique, exons, fill = technique)) +
+  geom_boxplot(outlier.size = 0.2, alpha = 0.3) +
+   geom_jitter(size=0.6, alpha=0.5, width = 0.1) +
+  facet_wrap(.~cluster, scales = "free_y") +
+  theme_sc
+
+```
+
+## boxplot top 20
+```{r box plot - top 20}
+top20.markers.exons <- top20.markers.exons %>% 
+                                mutate(technique =  paste0("all")) %>%
+                                mutate(id_ncbi =  as.numeric(id_ncbi))
+top20.markers.exons.sc <- top20.markers.exons.sc %>% 
+                                mutate(technique =  paste0("single_cell")) %>%
+                                mutate(id_ncbi =  as.numeric(id_ncbi))
+top20.markers.exons.sn1 <- top20.markers.exons.sn1 %>% 
+                                mutate(technique =  paste0("single_nuc_1")) %>%
+                                drop_na() %>%
+                                mutate(id_ncbi =  as.numeric(id_ncbi))
+top20.markers.exons.sn2 <- top20.markers.exons.sn2 %>% 
+                                mutate(technique =  paste0("single_nuc_2")) %>%
+                                drop_na() %>%
+                                mutate(id_ncbi =  as.numeric(id_ncbi))
+
+df.exons <- bind_rows(top20.markers.exons, top20.markers.exons.sc, top20.markers.exons.sn1, top20.markers.exons.sn2)
+
+df.exons %>%
+  group_by(technique, cluster) %>%
+  summarize(mean = mean(exons),
+            sd = sd(exons),
+            min = min(exons),
+            max = max(exons)) %>%
+  ggplot(aes(cluster, mean)) +
+  geom_point() +
+  geom_line() +
+  facet_grid(.~technique, scales = "free_y")
+
+df.exons %>%
+  ggplot(aes(cluster, exons)) +
+  geom_boxplot(outlier.size = 0.2) +
+   geom_jitter(size=0.4, alpha=0.5) +
+  facet_grid(.~technique, scales = "free_y") +
+  theme_sc
+
+df.exons %>%
+  filter(cluster %in% c('NPC_naive', 'NPC_prol', 'NPC_comm')) %>%
+  ggplot(aes(cluster, exons, fill = technique)) +
+  geom_boxplot(outlier.size = 0.2, alpha = 0.3) +
+   geom_jitter(size=0.6, alpha=0.5) +
+ # facet_grid(.~technique, scales = "free_y") +
+  theme_sc
+
+
+df.exons %>%
+  ggplot(aes(technique, exons, fill = technique)) +
+  geom_boxplot(outlier.size = 0.2, alpha = 0.3) +
+   geom_jitter(size=0.6, alpha=0.5, width = 0.1) +
+  facet_wrap(.~cluster, scales = "free_y") +
+  theme_sc
+```
+
+## Stats
+
+```{r check means - top 20}
+library(rstatix)
+# check normality - Shapiro-Wilk Normality Test
+df.exons %>%
+  group_by(cluster) %>%
+  shapiro_test(exons) %>% filter(p > 0.05)
+# only NPC_naive is normally distributed
+
+# run Kruskal- wallis test
+exon_mean_test <- df.exons %>%
+  group_by(cluster) %>%
+  kruskal_test(exons ~ technique) %>%
+  adjust_pvalue() %>%
+  add_significance("p.adj") %>% 
+  mutate(p.adj = round(p.adj,3))
+
+exon_mean_test %>% filter(p.adj < 0.05)
+
+write_csv(exon_mean_test, paste0(folder_path,"/Output/Data/kruskal_test_exon.csv"))
+
+# post hoc analysis
+post_hoc <- df.exons %>%
+  group_by(cluster) %>%
+  dunn_test(exons ~ technique, p.adjust.method = "bonferroni")
+
+post_hoc%>% filter(p.adj < 0.05)
+
+write_csv(post_hoc, paste0(folder_path,"/Output/Data/post_hoc_test_exon.csv"))
+
+# run anova for NPC_naive
+anova_npc_naive <- df.exons %>%
+  filter(cluster == "NPC_naive") %>%
+  drop_na(exons) %>%
+  anova_test(exons ~ technique) %>%
+  adjust_pvalue() %>%
+  add_significance("p.adj") 
+
+write_csv(anova_npc_naive , paste0(folder_path,"/Output/Data/anova_npc_naive.csv"))
+
+# post hoc analysis
+df.exons %>%
+  filter(cluster == "NPC_naive") %>%
+  drop_na(exons) %>%
+ tukey_hsd(exons ~ technique, p.adjust.method = "bonferroni")
+```
+
+# Sequence Length (mRNA)
+```{r}
+# make a function to map through the top 10 genes in each cluster
+find_seqlen <- function(gene){
+res <- entrez_search(db = "gene", term = glue::glue("{gene}[gene] AND (Mus musculus[orgn]"))
+# gene length
+all_the_links <- entrez_link(dbfrom='gene', id=res$ids[1], db='all')
+links <- all_the_links$links
+e_sum <- entrez_summary(db = "nuccore", id = links$gene_nuccore_refseqrna)
+# extract sequence length and make a tibble
+df <- tibble(gene = gene,
+                 id_ncbi = res$ids[1],
+                 gi_nuccore = names(extract_from_esummary(e_sum, "slen")),
+                 # gi_nuccore = ifelse(is.null(names(extract_from_esummary(e_sum, "slen"))), NA,
+                 #                              names(extract_from_esummary(e_sum, "slen"))),
+                 seqlen = as.numeric(extract_from_esummary(e_sum, "slen"))
+                 # seqlen = ifelse(is.null(extract_from_esummary(e_sum, "slen")),NA,
+                 #                 as.numeric(extract_from_esummary(e_sum, "slen")))
+                 )
+return(df)
+}
+
+# make another function to avoid the loop shutting down if it finds an error
+# possibly function returns values instead of errors
+# https://aosmith.rbind.io/2020/08/31/handling-errors/
+find_seqlen2 = possibly(.f = find_seqlen, otherwise = NULL)
+
+
+find_seqlen2("Cped1")
+```
+
+## seq length top 20
+```{r}
+# all
+# make a dataframe with the seq lenght  for each gene
+seqlen.all <- top20.markers %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map_dfr(find_seqlen2)  %>%
+  mutate(technique = "all")
+
+write_csv(seqlen.all,file = paste0(folder_path,"/Output/Data/top20.markers.seqlen.csv"))
+
+# only single cell
+# make a dataframe withthe seq lenght  for each gene
+seqlen.sc <- top20.markers.sc %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map_df(find_seqlen2) %>%
+  mutate(technique = "sc")
+
+write_csv(seqlen.sc, file = paste0(folder_path,"/Output/Data/top20.markers.sc.seqlen.csv"))
+
+# only single nucleous1
+# make a dataframe with the seq lenght  for each gene
+seqlen.sn1.error <- top20.markers.snuc1 %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map(find_seqlen2)
+
+# Finding the groups with errors
+# exons.sn1.error %>%
+#      keep(~is.null(.x))
+
+# remove empty elements
+seqlen.sn1 <- compact(seqlen.sn1.error) %>% 
+  bind_rows()  %>%
+  mutate(technique = "sn1")
+
+write_csv(seqlen.sn1, file = paste0(folder_path,"/Output/Data/top20.markers.sn1.seqlencsv"))
+
+# only single nucleous2
+# make a dataframe with the seq lenght  for each gene
+seqlen.sn2.error <- top20.markers.snuc2 %>% ungroup %>%
+  distinct(gene) %>% pull(gene) %>%
+  map(find_seqlen2) 
+
+# Finding the groups with errors
+# seqlen.sn2.error %>%
+      # keep(~is.null(.x))
+
+# remove empty elements
+seqlen.sn2 <-  compact(seqlen.sn2.error) %>% 
+  bind_rows()  %>%
+  mutate(technique = "sn2")
+
+write_csv(seqlen.sn2, file = paste0(folder_path,"/Output/Data/top20.markers.sn2.seqlen.csv"))
+
+```
+
+## boxplot top 20
+```{r}
+seqlen_df <- bind_rows(seqlen.all, seqlen.sc, seqlen.sn1, seqlen.sn2) 
+
+# Create a box plot
+box_seqlen <- seqlen_df %>%
+  ggplot(aes(y = log10(seqlen), x = technique)) +
+  geom_boxplot(outlier.size = 0.2) +
+   geom_jitter(size=0.4, alpha=0.1) +
+#   ylim(c(0, 50000)) +
+  theme_sc
+```
+
+## Stats
+
+```{r check means - top 20}
+library(rstatix)
+# check normality - Shapiro-Wilk Normality Test
+# check normality - Shapiro-Wilk Normality Test
+seqlen_df %>% 
+ # mutate(seqlen = log10(seqlen)) %>%
+  group_by(technique) %>%
+  shapiro_test(seqlen) %>% filter(p > 0.05)
+
+
+stat.seqlen <- seqlen_df %>%
+  kruskal_test(seqlen ~ technique) %>%
+  adjust_pvalue() %>%
+  add_significance("p.adj") %>% 
+  mutate(p.adj = round(p.adj,3))
+
+
+# post hoc analysis
+stat.seqlen <- seqlen_df %>%
+  dunn_test(seqlen ~ technique, p.adjust.method = "bonferroni")
+
+
+# Add the p-value manually
+box_seqlen + 
+  ggprism::add_pvalue(stat.seqlen, remove.bracket = TRUE, y.position = 5) +
+  geom_hline(yintercept = log10(mean(seqlen_df$seqlen)), linetype = 2)
+```
+
+
+
+# Genes from Wu et al, 2019
+
+```{r}
+# tubular contamination mRNA (fig. S2)
+genes_1 <- c('Slc34a1', 'Lrp2', 'Atp1a1', "Pax8")
+
+# marker gene expression from combined dataset (fig. 2b)
+genes_2 <- c('Nphs1','Fhl2','Emcn', 'Slc5a12', 'Slc7a13', 'Epha7', 'Slc12a1', 'Slc12a3', 'Slc8a1', 'Aqp2', 'Kit', 'Slc26a4', 'Ptprc')
+
+
+# cells versus nuclei
+# Cell-enriched genes in scDropSeq -  genes heat shock pathway (fig. 3c and 3k)
+genes_3 <- c("Hsp90aa1", "Hspa8", "Hspd1", 'Dnaja1','Hsp90b1', 'Hspa5', 'Hspa8', 'Hspb1', 'Hspa1b', 'Hsp90ab1', 'Hspa1a')
+
+# Nucleus-enriched genes (fig. 3d)
+genes_4 <- c("Slc8a1", "Pax8", "Hnf4aos", "Slc22a23", "Foxp1", "Gm26804", "Slc16a10", "Mecom", "Malat1")
+
+# combined datasets glomerular (podocytes, endothelial cells, and mesangial cells)
+# markers (fig. S5) 
+genes_5 <- c("Nphs2", "Nphs1", "Wt1", "Synpo", "Fhl2", "Myl9", "Itga8", "Fbln5", "Pecam1", "Emcn", "Flt1", "Tek")
+# stress response (fig. 3j)
+genes_6 <- c('Gadd45b', 'Egr1', 'Nr4a1', 'Atf3', 'Fosb', 'Fos', 'Jund', 'Junb', 'Jun')
+
+# apoptosis (fig. 3k)
+genes_7 <- c('Crip1', 'Ppp1r15a', 'Atf3', 'Dynll1', 'Ier3', 'Lmna', 'Ubc', 'Ubb', 'Jund', 'Junb', 'Jun', 'Tpt1')
+
+# proliferating proximal tubule cells, injury markers (Fig. 4C and 4d)
+genes_8 <- c('Havcr1', 'Vcam1', 'Nphs2', 'Flt1', 'B3gat2', 'Slc5a12', 'Slc5a10', 'Vcam1', 'Ccl2', 'Top2a', 'Epha7', 'Slc12a1', 'Slc12a3', 'Pde3b', 'Tmem45b' ,'Atp6v0d2', 'Cfh', 'Ren1', 'Tnc', 'Havcr1', 'Arhgap45', 'Cxcl1', 'Cxcl2', 'Il34', 'rhoGEF', 'Dock10')
+# note by the author: Intriguingly, this cluster expressed some injury markers (Vcam1) but not others (Havcr1)
+
+#  juxtaglomerular apparatus cells (fig. 4e)
+genes_9 <- c('Ren1', 'Hopx','Mrc2','Ednra','Akap12')
+
+#  Cell-specific ligand-receptor analysis (only snRNA-seq)
+genes_10 <- c('Bmp6', 'Pdgfd', 'Spp1', 'Sema3c', 'Sema6a', 'Gpc', 'Slit3')
+
+ligands <- c('Gpc3', 'Lama1', 'Vcam1', 'Icam1', 'Adam12', 'Sema6a', 'Sema3c', 'Col18a1', 'Vim', 'Plat', 'Serpine1', 'Hspg2', 'Lama4', 'Col14a1', 'Slit3', 'Sema3d', 'Col8a1', 'Col5a2', 'Lama2', 'Col1a2', 'Col3a1', 'Cfh', 'Pdgfd', 'Spp1', 'Col4a1', 'Fn1', 'Col4a6', 'Ncam1', 'Tnc', 'Apoe')
+
+receptors <- c('Igf1r', 'Gpc4', 'Cd36', 'Plxna2', 'Itga1', 'Itgav', 'Nt5e', 'Itgb8', 'Itgb6', 'Cd44', 'Acvr1', 'Itga3', 'Nrp2', 'Plxna4', 'Ptprb', 'Sdc2', 'Itgb5', 'Robo1', 'Pdgfrb', 'Cacna1c', 'Ddr2', 'Itga9', 'Nrp1', 'Robo2', 'Chrm3', 'Itgam')
+
+
+# put al together
+genes_all <- c(genes_1, genes_2, genes_3, genes_4, genes_5, genes_6, genes_7, genes_8, genes_9, genes_10, ligands, receptors)
+
+```
+
+```{r}
+library(tidyverse)
+
+
+wu_exons_seqlen.all <- genes_all %>%
+  map_dfr(find_exons_length2) 
+
+plotly::ggplotly(wu_exons_seqlen.all %>%
+                   ggplot(aes(x = exons, y = seqlen)) +
+                   geom_point(aes(group = gene), alpha = 0.3, show.legend = F) +
+                   theme_few()
+                 )
+
+write_csv(wu_exons_seqlen.all, 
+          file = paste0(folder_path,"/Output/Data/wu_humphreys_genes_exons_seqlen.csv"))
+
+
+wu_exons_seqlen.all %>% 
+  filter(gene %in% genes_7) %>%
+  group_by(gene) %>%
+  summarise(exon_mean = mean(exons),
+            seqlen_mean = mean(seqlen))
+```
+

@@ -1,0 +1,127 @@
+---
+title: "ncbi"
+author: "Ricardo Silva"
+date: "8/6/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+https://bioconnector.github.io/workshops/r-ncbi.html
+https://cran.r-project.org/web/packages/rentrez/vignettes/rentrez_tutorial.html
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r CLEAR EVERYTHING, eval=FALSE, include=FALSE}
+# unload all non-base packages
+lapply(names(sessionInfo()$otherPkgs), function(pkgs)
+  detach(
+    paste0('package:', pkgs),
+    character.only = T,
+    unload = T,
+    force = T
+))
+
+rm(list=ls())
+```
+
+# Packages and initial steps
+
+```{r load libraries, message=FALSE, warning=FALSE, include=FALSE}
+library(rentrez)
+
+```
+
+```{r}
+entrez_dbs()
+```
+
+Each of these databases is configured to receive complex queries based on specific fields. You can view a given databases “searchable fields” with entrez_db_searchable().
+
+```{r}
+entrez_db_searchable(db = "gene")
+entrez_db_searchable(db = "nuccore")
+entrez_db_searchable(db = "nucleotide")
+
+```
+
+```{r}
+# searching NCBI
+res <- entrez_search(db = "gene", term = "Tm4sf1[GENE] AND (Mus musculus[ORGN]")
+res <- entrez_search(db = "gene", term = "Calb1[GENE] AND (Mus musculus[ORGN]")
+res <- entrez_search(db = "gene", term = "Cped1[GENE] AND (Mus musculus[ORGN]")
+
+# identifiers
+res$ids
+res$retmax
+```
+
+```{r}
+# recs <- entrez_fetch(db = "pubmed", id = res$ids[1], rettype = "gene_table")
+# class(recs)
+# # need XML package to acces
+# recs <- entrez_fetch(db = "pubmed", id = res$ids[1], rettype = "xml", parsed = TRUE)
+# class(recs)
+```
+
+```{r}
+# access their full records.
+esums <- entrez_summary(db = "gene", id = res$ids)
+esums
+extract_from_esummary(esums, "description")
+extract_from_esummary(esums, "chrstart")
+extract_from_esummary(esums, "mim")
+# extract number of exons
+extract_from_esummary(esums, "genomicinfo")$exoncount
+map(esums, ~extract_from_esummary(., "genomicinfo")$exoncount)
+#lapply(esums, function(x) extract_from_esummary(x, "genomicinfo")$exoncount)
+
+```
+
+```{r}
+# gene length
+id <- res$ids
+all_the_links <- entrez_link(dbfrom='gene', id=id, db='all')
+links <- all_the_links$links
+e_sum <- entrez_summary(db = "nuccore", id = links$gene_nuccore_refseqrna)
+e_sum
+# extract sequence length
+# gi = GenInfo Identifier
+data.frame(extract_from_esummary(e_sum, "slen")) %>% 
+  rownames_to_column("GI") %>%
+  rename(seqlen = 2)
+extract_from_esummary(e_sum, "statistics")
+
+names(extract_from_esummary(e_sum, "slen")[1])
+extract_from_esummary(e_sum, "slen")[[1]]
+```
+
+```{r}
+find_exons_length <- function(gene){
+res <- entrez_search(db = "gene", term = glue::glue("{gene}[gene] AND (Mus musculus[orgn]"))
+esums <- entrez_summary(db = "gene", id = res$ids[1])
+# gene length
+all_the_links <- entrez_link(dbfrom='gene', id=res$ids[1], db='all')
+links <- all_the_links$links
+e_sum <- entrez_summary(db = "nuccore", id = links$gene_nuccore_refseqrna)
+# extract number of exons
+df <- tibble(gene = gene, 
+             id_ncbi = res$ids[1],
+             exons = as.numeric(extract_from_esummary(esums, "genomicinfo")$exoncount),
+             gi_nuccore = names(extract_from_esummary(e_sum, "slen")),
+             # gi_nuccore = ifelse(is.null(names(extract_from_esummary(e_sum, "slen"))), NA,
+             #                              names(extract_from_esummary(e_sum, "slen"))),
+          #   gi_nuccore = names(extract_from_esummary(e_sum, "slen")),
+             seqlen = as.numeric(extract_from_esummary(e_sum, "slen")),
+             description = extract_from_esummary(esums, "description"))
+return(df)
+}
+
+find_exons_length("Calb1")
+
+
+
+```
+

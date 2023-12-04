@@ -1,0 +1,227 @@
+---
+title: "scRNA_vs_sn_RNAseq_integration"
+author: "Ricardo Silva"
+date: "5/7/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      eval=FALSE, 
+                      message=FALSE, 
+                      warning=FALSE)
+```
+
+```{r CLEAR EVERYTHING, eval=FALSE, include=FALSE}
+# unload all non-base packages
+lapply(names(sessionInfo()$otherPkgs), function(pkgs)
+  detach(
+    paste0('package:', pkgs),
+    character.only = T,
+    unload = T,
+    force = T
+))
+
+rm(list=ls())
+```
+
+```{r}
+#install.packages('Seurat')
+#devtools::install_github("immunogenomics/harmony")
+```
+
+```{r load libraries, message=FALSE, warning=FALSE, include=FALSE}
+suppressPackageStartupMessages({
+  library(Seurat)
+  library(clustree)
+  library(data.table)
+  library(RColorBrewer)
+  library(sctransform)
+  library(scran)
+  library(org.Mm.eg.db)
+  library(clusterProfiler)
+  library(formattable)
+  library(patchwork)
+  library(tidyseurat) # to be compatible with Seurat and tidyverse APIs
+  library(tidyverse)
+})
+
+```
+
+```{r}
+folder_path <- getwd()
+source(paste0(folder_path,"/Script/theme_publication.R"))
+Merged.sc <- read_rds(paste0(folder_path,"/Data/Merged.sc.clean.cc.cyclone.clust.RRPS.rds"))
+```
+
+Useful links:
+<https://nbisweden.github.io/workshop-scRNAseq/exercises>
+<https://hbctraining.github.io/scRNA-seq_online/schedule/>
+<https://satijalab.org/seurat/archive/v3.1/immune_alignment.html>
+
+
+#################################
+######## Integration ############
+#################################
+
+Joint analysis of two or more single-cell datasets <https://satijalab.org/seurat/articles/integration_introduction.html> to correct for technical differences. Integration is a powerful method that uses these shared sources of greatest variation to identify shared subpopulations across conditions or datasets.The goal of integration is to ensure that the cell types of one condition/dataset align with the same celltypes of the other conditions/datasets (e.g. control macrophages align with stimulated macrophages).
+
+Anchors = cell pairwise correspondences between single cells across datasets
+ 
+Condition-specific clustering of the cells indicates that we need to integrate the cells across conditions to ensure that cells of the same cell type cluster together. <https://hbctraining.github.io/scRNA-seq_online/lessons/06_integration.html>
+
+Now, let's prepare the object
+
+```{r}
+#increasing R memory
+options(future.globals.maxSize = 20000 * 1024^2)
+```
+
+```{r split object}
+# split the seurat object based on origin (cell or nucleus)
+Int.list <- SplitObject(Merged.sc, split.by = "orig.ident")
+
+# name list elements
+Int.list <- Int.list %>% map(~SCTransform(.x, verbose = FALSE)) 
+
+#  identify variable features individually for each dataset based on the SCT transformation
+hvgs_per_dataset <- Int.list %>% map(~.x@assays$SCT@var.features)
+
+# plot a Venn diagram
+venn::venn(hvgs_per_dataset, opacity = 0.4, zcolor = (scales::hue_pal())(3), cexsn = 1, 
+    cexil = 1, lwd = 1, col = "white", frame = F, borders = NA)
+
+```
+
+
+```{r preparing for integration}
+#Next, select features for downstream integration, and run PrepSCTIntegration, which ensures that all necessary Pearson residuals have been calculated.
+
+# Select the most variable features to use for integration
+# we want to use all of the 4000 most variable genes identified by SCTransform for the integration before the PCA
+Int.features <- SelectIntegrationFeatures(object.list = Int.list, nfeatures = 4000)
+
+# Now, we need to prepare the SCTransform (SCT list object) object for integration.
+Int.list <- PrepSCTIntegration(object.list = Int.list, 
+                               anchor.features = Int.features,
+                               verbose = FALSE)
+```
+
+The integration steps are the following after prepare the SCTransformed obejct for integration:
+1 - perform CCA to identify shared sources of variation between the conditions/groups.
+2 - Ientify anchors or mutual nearest neighbors (MNNs) across datasets - if the two cells are 'best buddies' (identified based on gene expression) in both directions, then those cels will be marked as anchors to 'anchor' the two datastes
+3 - filter anchors to remove incorrect ones
+4 - Integrate the conditions/datasets - anchors and corresponding scores are used to transform the cell exression values and then integrate datasets/conditions
+
+Obs: steps 1, 2 and 3 are wrapped in one function `FindIntegrationAnchors()` and step for can be done using the`IntegrateData()` function.
+
+CCA/identify anchors/filtering
+```{r integration CCA}
+#Next, identify anchors and integrate the datasets. Commands are identical to the standard workflow, but make sure to set normalization.method = 'SCT':
+Int.anchors <- FindIntegrationAnchors(object.list = Int.list, 
+                                      normalization.method = "SCT", 
+                                      anchor.features = Int.features)
+
+```
+
+Now, we can integrate across conditions
+```{r integrate after CCA}
+# integrate across conditions
+Obj.integrated <- IntegrateData(anchorset = Int.anchors, normalization.method = "SCT")
+```
+
+```{r save and read - int}
+write_rds(Obj.integrated, paste0(folder_path,"/Data//Obj.integrated.sc_vs_sn.RRPS.rds"))
+
+rm(list = setdiff(ls(), c("Merged.sc", "folder_path", "Obj.integrated")))
+source(paste0(folder_path,"/Script/theme_publication.R"))
+
+Obj.integrated <- read_rds(paste0(folder_path,"/Data//Obj.integrated.sc_vs_sn.RRPS.rds"))
+```
+
+Dimension reduction on integrated data
+
+```{r integration dim reduction, warning = FALSE, message = FALSE}
+# Run Dimensionality reduction on integrated space
+Obj.integrated <- RunPCA(Obj.integrated, features = VariableFeatures(Obj.integrated))
+
+# Plot PCA
+PCAPlot(Obj.integrated,
+        group.by = "orig.ident",
+        split.by = "orig.ident") 
+
+Obj.integrated <- RunUMAP(Obj.integrated, dims = 1:30)
+DimPlot(Obj.integrated, 
+        reduction = "umap",
+        group.by = "orig.ident",
+        split.by = "orig.ident") 
+
+Obj.integrated <- RunTSNE(Obj.integrated, dims = 1:30)
+
+```
+
+```{r plot int dim red}
+# set color for plotting
+#library(RColorBrewer)
+# number of clusters
+#colourCount <- Idents(Obj.integrated) %>% n_distinct()
+# colourCount <-length(unique(ps.glom[,length(ps.glom)]))
+#getPalette <- colorRampPalette(brewer.pal(12, "Paired"))
+
+#Obj.integrated <- RunPCA(Obj.integrated, verbose = FALSE)
+#Obj.integrated <- RunUMAP(Obj.integrated, dims = 1:30)
+
+cowplot::plot_grid(ncol = 3,
+  # non-integrated
+  DimPlot(Merged.sc, reduction = "pca", group.by = "orig.ident") + NoAxes() + ggtitle("PCA raw_data"),
+  DimPlot(Merged.sc, reduction = "tsne", group.by = "orig.ident") + NoAxes() + ggtitle("tSNE raw_data"),
+  DimPlot(Merged.sc, reduction = "umap", group.by = "orig.ident") + NoAxes() + ggtitle("UMAP raw_data"),
+  # integrated
+  DimPlot(Obj.integrated, reduction = "pca", group.by = "orig.ident") + NoAxes() + ggtitle("PCA integrated"),
+  DimPlot(Obj.integrated, reduction = "tsne", group.by = "orig.ident") + NoAxes() + ggtitle("tSNE integrated"),
+  DimPlot(Obj.integrated, reduction = "umap", group.by = "orig.ident") + NoAxes() + ggtitle("UMAP integrated")
+)
+
+DimPlot(Obj.integrated, 
+        group.by = c("orig.ident", "seurat_clusters","Phase.Cyclone"), 
+        pt.size = 0.6, 
+        combine = T) &
+  theme_Publication_3() &
+  theme(legend.position = "bottom",
+        plot.title = element_text(hjust = 0.5),
+        axis.text = element_text(size = 12)) &
+        guides(color = guide_legend(nrow = 3, 
+        byrow = TRUE, override.aes = list(size = 4)))  #&
+     #  scale_colour_manual(values=getPalette(colourCount))
+
+```
+
+
+```{r}
+write_rds(Obj.integrated, paste0(folder_path,"/Data/Obj.integrated.sc_vs_sn.dim.red.RRPS.rds"))
+
+rm(list = setdiff(ls(), c("Merged.sc", "folder_path", "Obj.integrated")))
+source(paste0(folder_path,"/Script/theme_publication.R"))
+
+Obj.integrated <- read_rds(paste0(folder_path,"/Data/Data/Obj.integrated.sc_vs_sn.dim.red.RRPS.rds"))
+```
+
+###############
+Using Harmony
+##############
+
+```{r}
+library(harmony)
+
+Obj.integrated.harmony <- RunHarmony(Merged.sc, group.by.vars = "orig.ident", reduction = "pca", 
+    dims.use = 1:30, assay.use = "RNA")
+
+# Here we use all PCs computed from Harmony for UMAP calculation
+alldata.int[["harmony"]] <- alldata.harmony[["harmony"]]
+alldata.int <- RunUMAP(alldata.int, dims = 1:50, reduction = "harmony", reduction.name = "umap_harmony")
+```
+
+(...)
+

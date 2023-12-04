@@ -1,0 +1,220 @@
+---
+title: "scRNA_vs_sn_RNAseq_DE"
+author: "Ricardo Silva"
+date: "5/7/2021"
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      eval=FALSE, 
+                      message=FALSE, 
+                      warning=FALSE)
+```
+
+```{r CLEAR EVERYTHING, eval=FALSE, include=FALSE}
+# unload all non-base packages
+lapply(names(sessionInfo()$otherPkgs), function(pkgs)
+  detach(
+    paste0('package:', pkgs),
+    character.only = T,
+    unload = T,
+    force = T
+))
+
+rm(list=ls())
+```
+
+```{r}
+#install.packages('Seurat')
+#devtools::install_github("immunogenomics/harmony")
+```
+
+```{r load libraries, message=FALSE, warning=FALSE, include=FALSE}
+suppressPackageStartupMessages({
+  library(patchwork)
+  library(tidyseurat) # to be compatible with Seurat and tidyverse APIs
+  library(tidyverse)
+})
+
+```
+
+```{r set wd and theme}
+folder_path <- getwd()
+source(paste0(folder_path,"/Script/theme_publication.R"))
+theme_set(theme_Publication_3())
+
+```
+
+```{r}
+#increasing R memory
+options(future.globals.maxSize = 20000 * 1024^2)
+```
+
+Useful links:
+<https://nbisweden.github.io/workshop-scRNAseq/exercises>
+<https://hbctraining.github.io/scRNA-seq_online/schedule/>
+
+###################################
+Exploring known cell type markers
+####################################
+<https://hbctraining.github.io/scRNA-seq_online/lessons/08_SC_clustering_quality_control.html>
+
+Let’s go through and determine the identities of the clusters. To access the normalized expression levels of all genes, we can use the normalized count data stored in the RNA assay slot.
+
+NOTE: Assay is a slot defined in the Seurat object, it has multiple slots within it. In a given assay, the counts slot stores non-normalized raw counts, and the data slot stores normalized expression data. Therefore, when we run the `NormalizeData()` function in the above code, the normalized data will be stored in the data slot of the RNA assay while the counts slot will remain unaltered. `min.cutoff` of *q9* means 9% of cells with the lowest expression of the gene will not exhibit any purple shading (completely gray).
+
+```{r get data from DE analysis}
+markers_all <- read_csv(paste0(folder_path,"/Data/markers_obj.integ_cs_vs_nc_res0.7.csv"))
+markers_cells <- read_csv(paste0(folder_path,"/Data/markers_cells_obj.integ_cs_vs_nc_res0.7.csv"))
+markers_nucleous <- read_csv(paste0(folder_path,"/Data/markers_nucleous_obj.integ_cs_vs_nc_res0.7.csv"))
+```
+
+```{r venndiagramm for each dataset}
+# VennDiagram
+# Load library
+library(VennDiagram)
+
+# Prepare a palette of 3 colors with R colorbrewer:
+library(RColorBrewer)
+myCol <- brewer.pal(3, "Pastel2")
+
+# Generate 3 sets of each analysis
+set1 <- markers_all %>% 
+            group_by(cluster) %>% 
+            slice_max(avg_log2FC, n = 100) %>% 
+            pull(gene)
+set2 <-  markers_cells %>% 
+            group_by(cluster) %>% 
+            slice_max(avg_log2FC, n = 100) %>% 
+            pull(gene)
+set3 <-  markers_nucleous %>% 
+            group_by(cluster) %>% 
+            slice_max(avg_log2FC, n = 100) %>% 
+            pull(gene)
+
+# create a list
+ x = list(genes_all = set1,
+          genes_cells = set2 , 
+          genes_nucleous = set3)
+
+# Helper function to display Venn diagram
+display_venn <- function(x, ...){
+  grid.newpage()
+  venn_object <- VennDiagram::venn.diagram(x, filename = NULL, ...)
+  grid.draw(venn_object)
+}
+
+# Chart
+display_venn(x,
+             category.names = c("genes all" , "genes cells" , "genes nucleous"),
+             
+             # Circles
+              lwd = 2,
+              lty = 'blank',
+              fill = myCol,
+             
+              # Numbers
+              cex = 1.2,
+              fontface = "bold",
+              fontfamily = "sans",
+              
+              # Set names
+              cat.cex = 1,
+              cat.fontface = "bold",
+              cat.default.pos = "outer",
+              cat.pos = c(-27, 27, 135),
+              cat.dist = c(0.055, 0.055, 0.085),
+              cat.fontfamily = "sans",
+              rotation = 1)
+
+# Using ggVennDiagram
+library(ggVennDiagram)
+ggVennDiagram(x, 
+              label_alpha = 0,
+              category.names = c("genes sn and sn" , "genes sc" , "genes sn")) +
+  scale_fill_gradient(low="white",high = "lightcoral") +
+  scale_color_manual(values = c("grey", "grey", "grey")) +
+  ggtitle("Venn Diagram - top 100 Avg Log2FC")
+
+# get the intersections (only from github)
+process_region_data(Venn(x)) %>% 
+   unnest(cols = item) %>%
+   select(-component, -id, -count) %>% 
+   group_split(name) %>%
+   walk(~write_csv(x = .x, file = paste0(folder_path,"/Output/Data/DE/all/top_100_",unique(.x$name), ".csv")))
+
+```
+
+```{r venndiagramm for each cluster}
+# make a list with the top 100 DE genes
+markers_list <-  list(marker_all = markers_all %>% 
+                                      group_by(cluster) %>% 
+                                      slice_max(avg_log2FC, n = 100) %>% 
+                                      mutate(analysis = "marker_all"),
+                       markers_cells = markers_cells %>% 
+                                      group_by(cluster) %>% 
+                                      slice_max(avg_log2FC, n = 100) %>%
+                                      mutate(analysis = "markers_cells"),
+                       markers_nucleous = markers_nucleous %>% 
+                                      group_by(cluster) %>% 
+                                      slice_max(avg_log2FC, n = 100) %>%
+                                      mutate(analysis = "markers_nucleous"))
+
+# join in one big tabel
+markers_all_analysis <- map2_df(markers_list, names(markers_list), ~ mutate(.x, analysis = .y)) 
+
+# nest by cluster
+cluster_nested <- markers_all_analysis %>% 
+  select(analysis, cluster, gene) %>%
+  group_by(analysis, cluster) %>% 
+  nest() 
+
+# get the clusters to set names and and use in other functions below
+n_clusters <- cluster_nested %>% pull(cluster) %>% as.factor() %>% levels()
+
+# map each cluster
+markers_per_cluster <- map(n_clusters , ~cluster_nested %>% filter(cluster == .x)) 
+
+# make set list to be used in the function
+sets_per_cluster <- markers_per_cluster %>% 
+  map( ~pull(.) %>% flatten(.)) %>% 
+  # names of outer lists
+  set_names(paste0("Cluster_",n_clusters)) %>%
+  # Use one more map() because the names to set are the inner lists.
+  map(~ set_names(.,c("marker_all", "markers_cells", "markers_nucleous")))
+
+# map the function
+plot.list.venn <- sets_per_cluster %>% map2(.,names(sets_per_cluster),~
+                           ggVennDiagram(.x,
+                                         label_alpha = 0,
+                                         category.names = c("genes sc and sn" , "genes sc" , "genes sn")) +
+                           scale_fill_gradient(low="white",high = "lightcoral") +
+                           scale_color_manual(values = c("grey", "grey", "grey")) +
+                           ggtitle(paste0("Venn Diagram - top 100 DE genes in ",.y))
+                         )
+# print each plot
+walk2(paste0(folder_path,"/Output/Plots/venn_clusters/top_100_",names(sets_per_cluster),".tiff"), plot.list.venn, ggsave)
+
+# get the intersections and write in csv
+
+# make filepaths from list names, which are unique values of the y column
+#file_out <- sets_per_cluster %>% map(.,~paste0(folder_path,"/Output/Data/DE/clusters/top_100_",names(sets_per_cluster),"_",names(.),".csv"))
+
+# write csv table for each cluster and intersections
+# map interactions for each cluster
+tablelist.top100 <- sets_per_cluster %>% map(.,~
+                           process_region_data(Venn(.)) %>%
+                           unnest(cols = item)) %>%
+  # join all tables into a big table with a new column based on each cluster 
+  map2_df(., names(.), ~ mutate(.x, cluster = .y)) %>%
+  # split by clulster and interaction
+  group_by(cluster, name) %>% 
+  group_split() %>%
+  # walk("map") write_csv function through each table
+  walk(. %>% write_csv(paste0(folder_path,"/Output/Data/DE/clusters/top_100_",unique(.$cluster),"_",unique(.$name),".csv")))
+
+```
+
